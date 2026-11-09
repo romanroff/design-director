@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design Director</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; line-height: 1.5; color: #182722; background: #f5f5ed; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { max-width: 75rem; margin: auto; padding: clamp(1rem, 4vw, 3.5rem); }
+    h1 { font-size: clamp(2rem, 5vw, 4rem); line-height: 1.06; margin: .4em 0; }
+    h2 { font-size: 1.2rem; line-height: 1.25; margin: 0 0 .5rem; }
+    a { color: #205d48; text-underline-offset: .18em; }
+    fieldset { min-inline-size: 0; margin: 2rem 0 1.5rem; padding: 0; border: 0; }
+    legend { margin-bottom: .75rem; padding: 0; font-weight: 700; }
+    #options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr)); gap: 1rem; }
+    article { min-width: 0; border: 1px solid #9ba9a1; background: #fff; }
+    article:has(input:checked) { outline: 2px solid #205d48; outline-offset: -2px; }
+    img { display: block; width: 100%; background: #e7ede7; }
+    .detail { padding: 1rem; overflow-wrap: anywhere; }
+    .pick { display: flex; align-items: center; gap: .5rem; margin-top: .75rem; font-weight: 650; }
+    input { width: 1.15rem; height: 1.15rem; margin: 0; accent-color: #205d48; }
+    textarea { display: block; width: min(100%, 44rem); margin: .35rem 0 1rem; padding: .6rem; resize: vertical; }
+    textarea, button { font: inherit; }
+    .actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+    button { min-height: 44px; padding: .5rem .85rem; cursor: pointer; color: #182722; background: #fff; border: 1px solid #65776f; }
+    button[type="submit"] { color: #fff; background: #205d48; border-color: #205d48; }
+    :focus-visible { outline: 3px solid #714abc; outline-offset: 3px; }
+    #error { color: #912c1e; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="title">Design Director</h1>
+    <p id="prompt"></p>
+    <form id="selection" hidden>
+      <fieldset>
+        <legend id="legend"></legend>
+        <div id="options"></div>
+      </fieldset>
+      <label for="comment" id="comment-label"></label>
+      <textarea id="comment" rows="3" maxlength="4000"></textarea>
+      <div class="actions">
+        <button type="submit" id="choose"></button>
+        <button type="button" id="reject"></button>
+        <button type="button" id="revisit"></button>
+      </div>
+    </form>
+    <p id="error" role="alert"></p>
+    <p id="status" role="status"></p>
+  </main>
+
+  <script type="application/json" id="gallery-data">
+    {"id":"","locale":"en","title":"","prompt":"","mode":"single","options":[]}
+  </script>
+  <script>
+    const labels = {
+      en: {
+        single: "Choose one option", multiple: "Choose one or more options",
+        comment: "What would you keep or change?", choose: "Download selection",
+        reject: "Reject all and download", revisit: "Revisit an earlier decision",
+        pick: "Select", source: "Open source", missing: "Choose an option first.",
+        exported: "Share the downloaded JSON with Codex, or send your choice and comments in chat."
+      },
+      ru: {
+        single: "Выберите один вариант", multiple: "Выберите один или несколько вариантов",
+        comment: "Что сохранить или изменить?", choose: "Скачать выбор",
+        reject: "Отклонить все и скачать", revisit: "Вернуться к предыдущему решению",
+        pick: "Выбрать", source: "Открыть источник", missing: "Сначала выберите вариант.",
+        exported: "Передайте скачанный JSON в Codex или напишите свой выбор и комментарии в чате."
+      }
+    };
+    const get = id => document.getElementById(id);
+    const form = get("selection");
+    const validId = value => typeof value === "string" && /^[a-z0-9_-]{1,80}$/i.test(value);
+
+    function previewUrl(path) {
+      if (typeof path !== "string" || !path || /^(?:[a-z][a-z0-9+.-]*:|[\/\\])/i.test(path)) return null;
+      const folder = new URL(".", location.href);
+      const url = new URL(path, folder);
+      return url.href.startsWith(folder.href) ? url.href : null;
+    }
+
+    function makeCard(option, mode, words) {
+      const card = document.createElement("article");
+      const preview = previewUrl(option.preview);
+      if (preview) {
+        const image = document.createElement("img");
+        image.src = preview;
+        image.alt = option.alt || "";
+        card.append(image);
+      }
+      const detail = document.createElement("div");
+      detail.className = "detail";
+      const heading = document.createElement("h2");
+      heading.textContent = option.id + " · " + option.title;
+      const description = document.createElement("p");
+      description.textContent = option.description;
+      detail.append(heading, description);
+      if (typeof option.source === "string" && /^https?:\/\//i.test(option.source)) {
+        const source = document.createElement("a");
+        source.href = option.source;
+        source.textContent = words.source + " · " + option.id;
+        source.target = "_blank";
+        source.rel = "noopener noreferrer";
+        detail.append(source);
+      }
+      const label = document.createElement("label");
+      label.className = "pick";
+      const control = document.createElement("input");
+      control.type = mode === "multiple" ? "checkbox" : "radio";
+      control.name = "option";
+      control.value = option.id;
+      label.append(control, words.pick + " · " + option.id + " " + option.title);
+      detail.append(label);
+      card.append(detail);
+      return card;
+    }
+
+    function setup(data) {
+      const options = data.options;
+      if (!validId(data.id) || !["single", "multiple"].includes(data.mode) ||
+          !Array.isArray(options) || options.length < 2 ||
+          options.some(option => !option || !validId(option.id) ||
+            typeof option.title !== "string" || typeof option.description !== "string") ||
+          new Set(options.map(option => option.id)).size !== options.length) {
+        throw new Error("The gallery needs a revision ID and at least two distinct options.");
+      }
+
+      const locale = data.locale === "ru" ? "ru" : "en";
+      const words = labels[locale];
+      document.documentElement.lang = locale;
+      document.title = data.title || "Design Director";
+      get("title").textContent = document.title;
+      get("prompt").textContent = data.prompt || "";
+      get("legend").textContent = words[data.mode];
+      get("comment-label").textContent = words.comment;
+      for (const id of ["choose", "reject", "revisit"]) get(id).textContent = words[id];
+      get("options").replaceChildren(...options.map(option => makeCard(option, data.mode, words)));
+      form.hidden = false;
+
+      function exportDecision(outcome) {
+        const selectedIds = outcome === "choose" ? new FormData(form).getAll("option") : [];
+        get("error").textContent = "";
+        get("status").textContent = "";
+        if (outcome === "choose" && !selectedIds.length) {
+          get("error").textContent = words.missing;
+          form.elements.option[0].focus();
+          return;
+        }
+        const decision = { galleryId: data.id, outcome, selectedIds, comment: get("comment").value.trim() };
+        const file = new Blob([JSON.stringify(decision, null, 2) + "\n"], { type: "application/json" });
+        const url = URL.createObjectURL(file);
+        const download = document.createElement("a");
+        download.href = url;
+        download.download = data.id + "-decision.json";
+        document.body.append(download);
+        download.click();
+        download.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        get("status").textContent = words.exported;
+      }
+
+      form.addEventListener("submit", event => {
+        event.preventDefault();
+        exportDecision("choose");
+      });
+      get("reject").addEventListener("click", () => exportDecision("reject"));
+      get("revisit").addEventListener("click", () => exportDecision("revisit"));
+    }
+
+    try {
+      setup(JSON.parse(get("gallery-data").textContent));
+    } catch (error) {
+      get("error").textContent = error.message;
+    }
+  </script>
+</body>
+</html>
